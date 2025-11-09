@@ -84,11 +84,101 @@ def step_env(action: int):
 
 def render_state():
     env = st.session_state.env
-    current_player = env.get_player_id()
-    st.write(f"Current player: {'Human(0)' if current_player == 0 else 'AI(1)'}")
-    st.write(f"Legal actions: {env.get_state(current_player)['legal_actions']}")
-    st.write(f"Action names: {[env.actions[a] for a in env.get_state(current_player)['legal_actions'].keys()]}")
-    st.write(f"History: {st.session_state.history}")
+    if st.session_state.done:
+        st.write("🎯 **Game not started. Click 'New Hand' to begin.**")
+        if st.session_state.history:
+            st.write(f"📜 **Last Game History:** {st.session_state.history}")
+        return
+    
+    try:
+        current_player = env.get_player_id()
+    except AttributeError:
+        st.write("❌ Error: Unable to get current player. Please start a new hand.")
+        return
+    
+    # Display current player
+    player_name = '🧑 Human (You)' if current_player == 0 else '🤖 AI'
+    st.write(f"### Current Turn: {player_name}")
+    
+    # Get game state for current player
+    state = env.get_state(current_player)
+    
+    # Display hand cards for human player
+    if current_player == 0:
+        try:
+            # Extract and display hand information
+            obs = state['obs']
+            hand_display = get_hand_display(obs)
+            st.markdown(hand_display)
+            
+            # Also show raw observation for debugging (in expander)
+            with st.expander("🔍 Debug Info (Raw Observation)"):
+                st.write(f"Raw observation: {obs}")
+                
+        except Exception as e:
+            st.write("🃏 **Your Hand:** (Unable to display)")
+            st.write(f"Debug: {e}")
+    
+    # Display available actions with explanations
+    legal_actions = state['legal_actions']
+    action_names = [env.actions[a] for a in legal_actions.keys()]
+    
+    st.write("🎲 **Available Actions:**")
+    for i, (action_id, action_name) in enumerate(zip(legal_actions.keys(), action_names)):
+        explanation = get_action_explanation(action_name)
+        st.write(f"• **{action_name}**: {explanation}")
+    
+    # Display game history
+    if st.session_state.history:
+        st.write(f"📜 **Game History:** {' → '.join(st.session_state.history)}")
+
+def get_action_explanation(action_name):
+    """Get explanation for poker actions"""
+    explanations = {
+        'call': 'Match the current bet amount',
+        'raise': 'Increase the bet amount',
+        'fold': 'Give up your hand and forfeit the round',
+        'check': 'Pass without betting (when no bet is required)',
+        'bet': 'Place the first bet in a round'
+    }
+    return explanations.get(action_name.lower(), 'Perform this action')
+
+def card_to_name(card_id):
+    """Convert card ID to readable name"""
+    card_names = {
+        0: 'Jack ♣️',
+        1: 'Queen ♥️', 
+        2: 'King ♠️'
+    }
+    return card_names.get(int(card_id), f'Card {card_id}')
+
+def get_hand_display(obs):
+    """Extract and display hand information from observation"""
+    try:
+        # In Leduc Hold'em, the observation typically contains:
+        # - Private card information
+        # - Public card information (if revealed)
+        # - Betting information
+        
+        if len(obs) >= 3:
+            # First element is usually the private card
+            private_card = obs[0]
+            # Second element might be public card (if available)
+            public_card = obs[1] if obs[1] != -1 else None
+            
+            hand_info = f"🃏 **Private Card:** {card_to_name(private_card)}"
+            
+            if public_card is not None:
+                hand_info += f"\n🃏 **Community Card:** {card_to_name(public_card)}"
+            else:
+                hand_info += f"\n🃏 **Community Card:** (Not revealed yet)"
+                
+            return hand_info
+        else:
+            return f"🃏 **Hand:** {[card_to_name(x) for x in obs if x >= 0]}"
+            
+    except Exception as e:
+        return f"🃏 **Hand:** (Unable to parse: {obs})"
 
 
 def main():
@@ -145,21 +235,72 @@ def main():
         s = env.get_state(0)
         legal_actions = list(s['legal_actions'].keys())
         action_names = [env.actions[a] for a in legal_actions]
+        
+        st.write("### 🎯 Choose Your Action:")
         cols = st.columns(len(legal_actions))
         for i, a in enumerate(legal_actions):
-            if cols[i].button(action_names[i]):
+            action_name = action_names[i]
+            explanation = get_action_explanation(action_name)
+            button_label = f"{action_name.title()}"
+            
+            if cols[i].button(button_label, help=explanation, use_container_width=True):
                 st.session_state.history.append(f"Human: {env.actions[a]}")
                 step_env(a)
-                st.experimental_rerun()
+                st.rerun()
 
     if st.session_state.done:
         if 'env' in st.session_state:
-            payoffs = st.session_state.env.get_payoffs()
-            if payoffs:
-                st.subheader('Hand Result')
-                st.write(f"Payoffs: Human(0)={payoffs[0]}, AI(1)={payoffs[1]}")
+            try:
+                payoffs = st.session_state.env.get_payoffs()
+                if payoffs is not None and len(payoffs) > 0:
+                    st.subheader('🏆 Hand Result')
+                    human_result = payoffs[0]
+                    ai_result = payoffs[1]
+                    
+                    if human_result > ai_result:
+                        st.success(f"🎉 You Won! Your payoff: +{human_result}, AI payoff: {ai_result}")
+                    elif human_result < ai_result:
+                        st.error(f"😔 AI Won! Your payoff: {human_result}, AI payoff: +{ai_result}")
+                    else:
+                        st.info(f"🤝 It's a Tie! Both payoffs: {human_result}")
+            except AttributeError:
+                st.subheader('🏆 Hand Result')
+                st.info("Game completed. (Payoffs unavailable due to library version)")
+            except Exception as e:
+                st.subheader('🏆 Hand Result')
+                st.warning(f"Game completed. (Error retrieving payoffs: {str(e)})")
 
-    st.caption('Tips: 1) 学習後に最新checkpointを選択 2) New Handで開始 3) 人間(0)の番でアクションボタン表示')
+    # Add poker rules explanation
+    with st.expander("📚 Leduc Hold'em Rules & Tips"):
+        st.write("""
+        **Leduc Hold'em** is a simplified poker variant:
+        
+        🃏 **Game Setup:**
+        - 6 cards total: 2 Jacks ♣️, 2 Queens ♥️, 2 Kings ♠️
+        - Each player gets 1 private card
+        - 1 community card is revealed after first betting round
+        
+        🎯 **How to Win:**
+        - **Pair**: Your card + community card are the same rank (best hand!)
+        - **High Card**: Higher rank wins (King ♠️ > Queen ♥️ > Jack ♣️)
+        
+        🃏 **Card Values:**
+        - Jack ♣️ = Lowest value
+        - Queen ♥️ = Medium value  
+        - King ♠️ = Highest value
+        
+        🎲 **Actions:**
+        - **Call**: Match the current bet
+        - **Raise**: Increase the bet (limited raises per round)
+        - **Fold**: Give up and lose your bet
+        - **Check**: Pass when no bet is required
+        
+        💡 **Tips:**
+        1. Select a model checkpoint from the sidebar
+        2. Click 'New Hand' to start a new game
+        3. Choose your action when it's your turn
+        4. Try to read the AI's betting patterns!
+        """)
 
 if __name__ == '__main__':
     main()
